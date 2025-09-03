@@ -2,11 +2,14 @@
 
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload, X, FileSpreadsheet, Loader2, Download, Eye } from 'lucide-react';
+import { Upload, X, FileSpreadsheet, Loader2, Download, Eye, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Slider } from '@/components/ui/slider';
+import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 
 import { parseFile, type ParsedFile, type ColumnMapping, type MergeResult, exportToCSV, downloadFile } from '@/lib/file-processor';
@@ -19,6 +22,8 @@ export default function FileMerger() {
   const [files, setFiles] = useState<FileWithPreview[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [mappings, setMappings] = useState<ColumnMapping[]>([]);
+  const [selectedMappings, setSelectedMappings] = useState<Set<number>>(new Set());
+  const [confidenceThreshold, setConfidenceThreshold] = useState<number>(0.6);
   const [mergeResult, setMergeResult] = useState<MergeResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -77,6 +82,7 @@ export default function FileMerger() {
   const removeFile = (index: number) => {
     setFiles(prev => prev.filter((_, i) => i !== index));
     setMappings([]);
+    setSelectedMappings(new Set());
     setMergeResult(null);
   };
 
@@ -110,7 +116,18 @@ export default function FileMerger() {
       }
 
       const result = await response.json();
-      setMappings(result.mappings || []);
+      const mappings = result.mappings || [];
+      setMappings(mappings);
+      
+      // Auto-select mappings above confidence threshold
+      const autoSelected = new Set<number>();
+      mappings.forEach((mapping: ColumnMapping, index: number) => {
+        if (mapping.confidence >= confidenceThreshold) {
+          autoSelected.add(index);
+        }
+      });
+      setSelectedMappings(autoSelected);
+      
       toast.success('Column analysis complete!');
     } catch (error) {
       toast.error(`Analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -125,6 +142,13 @@ export default function FileMerger() {
       return;
     }
 
+    if (selectedMappings.size === 0) {
+      toast.error('Please select at least one mapping or adjust the confidence threshold');
+      return;
+    }
+
+    const selectedMappingsArray = mappings.filter((_, index) => selectedMappings.has(index));
+
     setIsProcessing(true);
     try {
       const response = await fetch('/api/merge-files', {
@@ -133,7 +157,7 @@ export default function FileMerger() {
         body: JSON.stringify({
           file1: files[0],
           file2: files[1],
-          mappings
+          mappings: selectedMappingsArray
         })
       });
 
@@ -159,6 +183,39 @@ export default function FileMerger() {
     downloadFile(csv, filename);
     toast.success('File downloaded successfully!');
   };
+
+  const toggleMapping = (index: number) => {
+    setSelectedMappings(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
+      } else {
+        newSet.add(index);
+      }
+      return newSet;
+    });
+  };
+
+  const updateConfidenceThreshold = (value: number[]) => {
+    const newThreshold = value[0];
+    setConfidenceThreshold(newThreshold);
+    
+    // Auto-update selected mappings based on new threshold
+    const autoSelected = new Set<number>();
+    mappings.forEach((mapping, index) => {
+      if (mapping.confidence >= newThreshold) {
+        autoSelected.add(index);
+      }
+    });
+    setSelectedMappings(autoSelected);
+  };
+
+  const getFilteredMappings = () => {
+    return mappings.filter(mapping => mapping.confidence >= confidenceThreshold);
+  };
+
+  const selectedCount = selectedMappings.size;
+  const eligibleCount = getFilteredMappings().length;
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -250,13 +307,13 @@ export default function FileMerger() {
               {mappings.length > 0 && (
                 <Button
                   onClick={performMerge}
-                  disabled={isProcessing}
+                  disabled={isProcessing || selectedMappings.size === 0}
                   variant="default"
                 >
                   {isProcessing ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   ) : null}
-                  Merge Files
+                  Merge Files ({selectedCount} mappings selected)
                 </Button>
               )}
             </div>
@@ -268,41 +325,101 @@ export default function FileMerger() {
       {mappings.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>AI-Detected Column Mappings</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              AI-Detected Column Mappings
+            </CardTitle>
             <CardDescription>
-              The AI has analyzed your files and found these potential column matches
+              Configure which column mappings to use for merging. Adjust the confidence threshold or manually select mappings.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>File 1 Column</TableHead>
-                  <TableHead>File 2 Column</TableHead>
-                  <TableHead>Merged Name</TableHead>
-                  <TableHead>Confidence</TableHead>
-                  <TableHead>Reason</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {mappings.map((mapping, index) => (
-                  <TableRow key={index}>
-                    <TableCell className="font-medium">{mapping.column1}</TableCell>
-                    <TableCell className="font-medium">{mapping.column2}</TableCell>
-                    <TableCell>{mapping.mergedName}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Progress value={mapping.confidence * 100} className="w-16" />
-                        <span className="text-sm">{Math.round(mapping.confidence * 100)}%</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {mapping.reason}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+          <CardContent className="space-y-6">
+            {/* Confidence Threshold Control */}
+            <div className="space-y-4 p-4 bg-muted/50 rounded-lg">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="confidence-threshold" className="text-sm font-medium">
+                  Confidence Threshold: {Math.round(confidenceThreshold * 100)}%
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {selectedCount} of {mappings.length} mappings selected
+                </span>
+              </div>
+              <Slider
+                id="confidence-threshold"
+                value={[confidenceThreshold]}
+                onValueChange={updateConfidenceThreshold}
+                max={1}
+                min={0}
+                step={0.05}
+                className="w-full"
+              />
+              <p className="text-xs text-muted-foreground">
+                Mappings with confidence below {Math.round(confidenceThreshold * 100)}% will be automatically deselected
+              </p>
+            </div>
+
+            {/* Mappings Table */}
+            <div className="space-y-2">
+              <div className="text-sm font-medium">
+                Column Mappings ({selectedCount} selected, {eligibleCount} above threshold)
+              </div>
+              <div className="border rounded-lg">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-12">Select</TableHead>
+                      <TableHead>File 1 Column</TableHead>
+                      <TableHead>File 2 Column</TableHead>
+                      <TableHead>Merged Name</TableHead>
+                      <TableHead>Confidence</TableHead>
+                      <TableHead>Reason</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {mappings.map((mapping, index) => {
+                      const isAboveThreshold = mapping.confidence >= confidenceThreshold;
+                      const isSelected = selectedMappings.has(index);
+                      
+                      return (
+                        <TableRow 
+                          key={index}
+                          className={!isAboveThreshold ? 'opacity-50' : ''}
+                        >
+                          <TableCell>
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleMapping(index)}
+                              disabled={!isAboveThreshold}
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">{mapping.column1}</TableCell>
+                          <TableCell className="font-medium">{mapping.column2}</TableCell>
+                          <TableCell>{mapping.mergedName}</TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Progress 
+                                value={mapping.confidence * 100} 
+                                className="w-16" 
+                              />
+                              <span className="text-sm">{Math.round(mapping.confidence * 100)}%</span>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {mapping.reason}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+              
+              {selectedCount === 0 && (
+                <div className="text-center py-4 text-sm text-muted-foreground bg-muted/30 rounded-lg">
+                  No mappings selected. Lower the confidence threshold or manually select mappings to proceed with merging.
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
